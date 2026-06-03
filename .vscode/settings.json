@@ -1,0 +1,31 @@
+{
+    "files.associations": {
+        "*.c": "c",
+        "*.json": "jsonc",
+        "chassis.h": "c",
+        "arm_math.h": "c",
+        "general_def.h": "c",
+        "robot_def.h": "c",
+        "remote_control.h": "c",
+        "robot_cmd.h": "c",
+        "ins_task.h": "c",
+        "master_process.h": "c",
+        "message_center.h": "c",
+        "arm_solution.h": "c",
+        "referee_ui.h": "c",
+        "bsp_dwt.h": "c",
+        "bsp_log.h": "c",
+        "can_comm.h": "c",
+        "robot.h": "c",
+        "math.h": "c",
+        "dji_motor.h": "c",
+        "pitch.h": "c",
+        "main.h": "c",
+        "my_fdcan.h": "c",
+        "cmsis_os.h": "c",
+        "referee_task.h": "c",
+        "shoot.h": "c"
+    },
+    "stm32-for-vscode.makePath": false,
+    "cortex-debug.variableUseNaturalFormat": true
+}
