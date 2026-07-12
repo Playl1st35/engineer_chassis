@@ -48,11 +48,12 @@ static referee_info_t* referee_data; // 用于获取裁判系统的数据
 static Referee_Interactive_info_t ui_data; // UI数据，将底盘中的数据传入此结构体的对应变量中，UI会自动检测是否变化，对应显示UI
 
 #define CHASSIS_TASK_FREQUENCY 200 
-#define LIFT_PERIOD 3
+#define LIFT_PERIOD (3.0f)
 #define LIFT_HEIGHT 14.3f
-#define LEG_HEIGHT (0.65)
-#define LEFT_LEG_GRAVITY_COMPENSATION 1.7 // 左腿重力补偿,根据实际情况调整
-#define EXTRA_TORQUE 3.0f
+#define LEG_HEIGHT (0.57)
+#define LEFT_LEG_GRAVITY_COMPENSATION 1.0 // 左腿重力补偿,根据实际情况调整
+#define EXTRA_TORQUE 0.0f
+#define LEG_LIFT (0.03)
 
 static SuperCapInstance *cap;                                       // 超级电容
 static DJIMotorInstance *motor_lf, *motor_rf, *motor_lb, *motor_rb; // left right forward back
@@ -99,22 +100,22 @@ void ChassisInit()
     chassis_motor_config.can_init_config.tx_id = 1;
     chassis_motor_config.can_init_config.can_handle = &hcan2;
     chassis_motor_config.controller_setting_init_config.motor_reverse_flag = MOTOR_DIRECTION_REVERSE;
-    motor_lf = DJIMotorInit(&chassis_motor_config);
+    motor_rb = DJIMotorInit(&chassis_motor_config);
 
     chassis_motor_config.can_init_config.tx_id = 2;
     chassis_motor_config.can_init_config.can_handle = &hcan1;
     chassis_motor_config.controller_setting_init_config.motor_reverse_flag = MOTOR_DIRECTION_REVERSE;
-    motor_rf = DJIMotorInit(&chassis_motor_config);
+    motor_lb = DJIMotorInit(&chassis_motor_config);
 
     chassis_motor_config.can_init_config.tx_id = 4;
     chassis_motor_config.can_init_config.can_handle = &hcan2;
     chassis_motor_config.controller_setting_init_config.motor_reverse_flag = MOTOR_DIRECTION_REVERSE;
-    motor_lb = DJIMotorInit(&chassis_motor_config);
+    motor_rf = DJIMotorInit(&chassis_motor_config);
 
     chassis_motor_config.can_init_config.tx_id = 3;
     chassis_motor_config.can_init_config.can_handle = &hcan1;
     chassis_motor_config.controller_setting_init_config.motor_reverse_flag = MOTOR_DIRECTION_REVERSE;
-    motor_rb = DJIMotorInit(&chassis_motor_config);
+    motor_lf = DJIMotorInit(&chassis_motor_config);
 
     MIT_Init_Config_s dm_motor_config = {
         .controller_param_init_config = {
@@ -136,7 +137,7 @@ void ChassisInit()
     dm_motor_config.motor_type = DM8009;
     leg_right_motor = MITMotorInit(&dm_motor_config);
     // 升降电机
-    dm_motor_config.controller_param_init_config.Kp = 20;
+    dm_motor_config.controller_param_init_config.Kp = 200;//20
     dm_motor_config.controller_param_init_config.Kd = 5;
     dm_motor_config.can_init_config.tx_id = 0x05;
     dm_motor_config.can_init_config.rx_id = 0x15;
@@ -225,7 +226,7 @@ static void EstimateSpeed()
 
 static void LiftMotorControl()
 {
-    static float step = (float)LIFT_HEIGHT / (LIFT_PERIOD * CHASSIS_TASK_FREQUENCY);
+    static float step = (float)LIFT_HEIGHT / ((LIFT_PERIOD * 0.85) * CHASSIS_TASK_FREQUENCY);
     static float target_pos;
     static Lift_Motor_State_e last_state;
     lift_motor_state = chassis_cmd_recv.lift_motor_state;
@@ -347,9 +348,9 @@ static void LegMotorControl()
             // 物理上，最高点的pos比最低点小（pos减小为抬起），因此向下（LIFT_DOWN）应当使pos增加
             target_pos_left -= step; // 以固定步长降低目标位置（数值增加表示下降）
             target_pos_right += step;
-            if(target_pos_left <= leg_left_motor->bottom_pos + 3.0f * step && target_pos_right >= leg_right_motor->bottom_pos - 3.0f * step){
-                target_pos_left = leg_left_motor->bottom_pos; // 不超过最低位置
-                target_pos_right = leg_right_motor->bottom_pos;
+            if(target_pos_left <= leg_left_motor->bottom_pos + 3.0f * step + LEG_LIFT  && target_pos_right >= leg_right_motor->bottom_pos - 3.0f * step - LEG_LIFT){
+                target_pos_left = leg_left_motor->bottom_pos + LEG_LIFT; // 不超过最低位置
+                target_pos_right = leg_right_motor->bottom_pos - LEG_LIFT;
                 leg_motor_state = LIFT_DOWN_LOCK; // 到达最低位置后切换状态
             }
             DMMotorSetMITAngle(leg_left_motor, target_pos_left); // 位置控制
@@ -357,8 +358,8 @@ static void LegMotorControl()
         }
         break;
     case LIFT_DOWN_LOCK:
-        DMMotorSetMITAngle(leg_left_motor, leg_left_motor->bottom_pos);
-        DMMotorSetMITAngle(leg_right_motor, leg_right_motor->bottom_pos);
+        DMMotorSetMITAngle(leg_left_motor, leg_left_motor->bottom_pos + LEG_LIFT);
+        DMMotorSetMITAngle(leg_right_motor, leg_right_motor->bottom_pos - LEG_LIFT);
         break;
     case LIFT_UP:
         if(chassis_feedback_data.leg_init_flag == 1){

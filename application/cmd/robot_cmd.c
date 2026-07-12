@@ -114,8 +114,8 @@ static void RemoteControlSet()
 {
     chassis_cmd_send.chassis_mode = CHASSIS_ROTATE;
     // 底盘参数,目前没有加入小陀螺(调试似乎暂时没有必要),系数需要调整
-    chassis_cmd_send.vx = 12 * (float)rc_data[TEMP].rc.rocker_l_; // _水平方向
-    chassis_cmd_send.vy = 12 * (float)rc_data[TEMP].rc.rocker_l1; // 1数值方向
+    chassis_cmd_send.vx = 40 * (float)rc_data[TEMP].rc.rocker_l_; // _水平方向
+    chassis_cmd_send.vy = 40 * (float)rc_data[TEMP].rc.rocker_l1; // 1数值方向
     chassis_cmd_send.wz = 3 * (float)rc_data[TEMP].rc.rocker_r_;
     if(chassis_cmd_send.vx < 50 && chassis_cmd_send.vx > -50) chassis_cmd_send.vx = 0; // 遥控器死区
     if(chassis_cmd_send.vy < 50 && chassis_cmd_send.vy > -50) chassis_cmd_send.vy = 0;
