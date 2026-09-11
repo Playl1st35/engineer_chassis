@@ -29,21 +29,24 @@
 #define HALF_WHEEL_BASE (WHEEL_BASE / 2.0f)     // 半轴距
 #define HALF_TRACK_WIDTH (TRACK_WIDTH / 2.0f)   // 半轮距
 #define PERIMETER_WHEEL (RADIUS_WHEEL * 2 * PI) // 轮子周长
-
+#define SPEED_COEF (-6876.6f)
+#define OMEGA_COEF (6.0f)
+#define GO_UP_FORWARD_SPEED (-1.0f)
+#define GO_UP_FORWARD_TIME (2.0f)
 /* 底盘应用包含的模块和信息存储,底盘是单例模式,因此不需要为底盘建立单独的结构体 */
 #ifdef CHASSIS_BOARD // 如果是底盘板,使用板载IMU获取底盘转动角速度
 #include "can_comm.h"
 #include "ins_task.h"
-static CANCommInstance *chasiss_can_comm; // 双板通信CAN comm
+static CANCommInstance *chassis_can_comm; // 双板通信CAN comm
 attitude_t *Chassis_IMU_data;
 #endif // CHASSIS_BOARD
 #ifdef ONE_BOARD
 static Publisher_t *chassis_pub;                    // 用于发布底盘的数据
 static Subscriber_t *chassis_sub;                   // 用于订阅底盘的控制命令
 #endif                                              // !ONE_BOARD
-static Chassis_Ctrl_Cmd_s chassis_cmd_recv;         // 底盘接收到的控制命令
+static Chassis_Ctrl_Local_s chassis_cmd_local;         // 底盘本地控制命令
 static Chassis_Upload_Data_s chassis_feedback_data; // 底盘回传的反馈数据
-
+static Chassis_Ctrl_Cmd_s chassis_cmd_recv;
 static referee_info_t* referee_data; // 用于获取裁判系统的数据
 static Referee_Interactive_info_t ui_data; // UI数据，将底盘中的数据传入此结构体的对应变量中，UI会自动检测是否变化，对应显示UI
 
@@ -60,7 +63,8 @@ static DJIMotorInstance *motor_lf, *motor_rf, *motor_lb, *motor_rb; // left righ
 static DMMotorInstance *lift_motor,*leg_left_motor,*leg_right_motor;
 static Lift_Motor_State_e lift_motor_state;
 static Lift_Motor_State_e leg_motor_state;
-
+static GoUpStairs_Step_e goupstairs_step = STEP_ONE_LIFT_ALL;
+static float goupstairs_step_enter_ms =0.0f;
 
 /* 私有函数计算的中介变量,设为静态避免参数传递的开销 */
 static float chassis_vx, chassis_vy;     // 将云台系的速度投影到底盘
@@ -162,14 +166,14 @@ void ChassisInit()
 
     CANComm_Init_Config_s comm_conf = {
         .can_config = {
-            .can_handle = &hcan2,
+            .can_handle = &hcan3,
             .tx_id = 0x311,
             .rx_id = 0x312,
         },
         .recv_data_len = sizeof(Chassis_Ctrl_Cmd_s),
         .send_data_len = sizeof(Chassis_Upload_Data_s),
     };
-    chasiss_can_comm = CANCommInit(&comm_conf); // can comm初始化
+    chassis_can_comm = CANCommInit(&comm_conf); // can comm初始化
 #endif                                          // CHASSIS_BOARD
 
 #ifdef ONE_BOARD // 单板控制整车,则通过pubsub来传递消息
@@ -188,10 +192,10 @@ void ChassisInit()
  */
 static void MecanumCalculate()
 {
-    vt_lf = -chassis_vx - chassis_vy - chassis_cmd_recv.wz * LF_CENTER;
-    vt_rf = -chassis_vx + chassis_vy - chassis_cmd_recv.wz * RF_CENTER;
-    vt_lb = chassis_vx - chassis_vy - chassis_cmd_recv.wz * LB_CENTER;
-    vt_rb = chassis_vx + chassis_vy - chassis_cmd_recv.wz * RB_CENTER;
+    vt_lf = -chassis_vx - chassis_vy - chassis_cmd_local.wz * LF_CENTER;
+    vt_rf = -chassis_vx + chassis_vy - chassis_cmd_local.wz * RF_CENTER;
+    vt_lb = chassis_vx - chassis_vy - chassis_cmd_local.wz * LB_CENTER;
+    vt_rb = chassis_vx + chassis_vy - chassis_cmd_local.wz * RB_CENTER;
 }
 
 /**
@@ -229,7 +233,7 @@ static void LiftMotorControl()
     static float step = (float)LIFT_HEIGHT / ((LIFT_PERIOD * 0.85) * CHASSIS_TASK_FREQUENCY);
     static float target_pos;
     static Lift_Motor_State_e last_state;
-    lift_motor_state = chassis_cmd_recv.lift_motor_state;
+    lift_motor_state = chassis_cmd_local.lift_motor_state;
     static int lift_down_cnt = 0;
     static uint8_t state_init_flag;
     static uint8_t set_zero_point_flag;
@@ -321,7 +325,7 @@ static void LegMotorControl()
 {
     static float target_pos_left, target_pos_right;
     static float step = ((float)LEG_HEIGHT) / (LIFT_PERIOD * CHASSIS_TASK_FREQUENCY);
-    leg_motor_state = chassis_cmd_recv.leg_motor_state;
+    leg_motor_state = chassis_cmd_local.leg_motor_state;
     static uint8_t state_init_flag;
     static Lift_Motor_State_e last_state;
     if(leg_motor_state != last_state){
@@ -396,6 +400,89 @@ static void LegMotorControl()
     // if(leg_right_motor->measure.position < leg_right_motor->bottom_pos) leg_right_motor->bottom_pos = leg_right_motor->measure.position;
     last_state = leg_motor_state;
 }
+
+static void Recv2Local()
+{
+    chassis_cmd_local.chassis_mode = chassis_cmd_recv.chassis_mode;
+    chassis_cmd_local.vx = chassis_cmd_recv.vx * SPEED_COEF;
+    chassis_cmd_local.vy = chassis_cmd_recv.vy * SPEED_COEF;
+    chassis_cmd_local.wz = chassis_cmd_recv.wz * OMEGA_COEF;
+    if(chassis_cmd_recv.chassis_mode == CHASSIS_GO_UP_STAIRS){
+        return;
+    }
+    if(chassis_cmd_recv.chassis_rise_flag == CHASSIS_RISE_ON){
+        if((chassis_cmd_local.lift_motor_state == LIFT_DOWN_LOCK || chassis_cmd_local.lift_motor_state == LIFT_DOWN) && (chassis_feedback_data.lift_init_flag == 1)){
+            chassis_cmd_local.lift_motor_state = LIFT_UP;
+        }
+        if((chassis_cmd_local.leg_motor_state == LIFT_DOWN_LOCK || chassis_cmd_local.leg_motor_state == LIFT_DOWN) && (chassis_feedback_data.leg_init_flag == 1)){
+            chassis_cmd_local.leg_motor_state = LIFT_UP;
+        }
+    }
+    else if(chassis_cmd_recv.chassis_rise_flag == CHASSIS_RISE_OFF){
+        if(chassis_cmd_local.lift_motor_state == LIFT_UP_LOCK || chassis_cmd_local.lift_motor_state == LIFT_UP){
+            chassis_cmd_local.lift_motor_state = LIFT_DOWN;
+        }
+        if(chassis_cmd_local.leg_motor_state == LIFT_UP_LOCK || chassis_cmd_local.leg_motor_state == LIFT_UP){
+            chassis_cmd_local.leg_motor_state = LIFT_DOWN;
+        }
+    }
+}
+
+static void GoUpStairs()
+{
+
+    switch (goupstairs_step)
+    {
+    case STEP_ONE_LIFT_ALL:
+        chassis_cmd_local.vx = 0;
+        chassis_cmd_local.vy = 0;
+        chassis_cmd_local.wz = 0;
+        chassis_cmd_local.lift_motor_state = LIFT_UP;
+        chassis_cmd_local.leg_motor_state = LIFT_UP;
+        if(lift_motor_state == LIFT_UP_LOCK && leg_motor_state == LIFT_UP_LOCK){
+            goupstairs_step = STEP_TWO_MOVE_FRONT;
+            goupstairs_step_enter_ms = DWT_GetTimeline_ms();
+        }
+        break;
+    case STEP_TWO_MOVE_FRONT:
+        chassis_cmd_local.vx = GO_UP_FORWARD_SPEED * SPEED_COEF;
+        chassis_cmd_local.vy = 0;
+        chassis_cmd_local.wz = 0;
+        if(DWT_GetTimeline_ms() - goupstairs_step_enter_ms >= GO_UP_FORWARD_TIME * 1000.0f){
+            goupstairs_step = STEP_THREE_LOWER_LIFT;
+        }
+        break;
+    case STEP_THREE_LOWER_LIFT:
+        chassis_cmd_local.vx = 0;
+        chassis_cmd_local.vy = 0;
+        chassis_cmd_local.wz = 0;
+        chassis_cmd_local.lift_motor_state = LIFT_DOWN;
+        if(lift_motor_state == LIFT_DOWN_LOCK){
+            goupstairs_step = STEP_FOUR_LOWER_LEG;
+            goupstairs_step_enter_ms = DWT_GetTimeline_ms();
+        }
+        break;
+    case STEP_FOUR_LOWER_LEG:
+        chassis_cmd_local.vx = GO_UP_FORWARD_SPEED * SPEED_COEF;
+        chassis_cmd_local.vy = 0;
+        chassis_cmd_local.wz = 0;
+        if(DWT_GetTimeline_ms() - goupstairs_step_enter_ms >= GO_UP_FORWARD_TIME * 1000.0f){
+            chassis_cmd_local.leg_motor_state = LIFT_DOWN;
+            if(leg_motor_state == LIFT_DOWN_LOCK){
+                goupstairs_step = STEP_FIVE_WAIT;
+            }
+        }
+        break;
+    case STEP_FIVE_WAIT:
+        chassis_cmd_local.vx = GO_UP_FORWARD_SPEED * SPEED_COEF;
+        chassis_cmd_local.vy = 0;
+        chassis_cmd_local.wz = 0;
+        break;
+    default:
+        break;
+    }
+}
+
 /* 机器人底盘控制核心任务 */
 //200Hz
 void ChassisTask()
@@ -406,10 +493,15 @@ void ChassisTask()
     SubGetMessage(chassis_sub, &chassis_cmd_recv);
 #endif
 #ifdef CHASSIS_BOARD
-    chassis_cmd_recv = *(Chassis_Ctrl_Cmd_s *)CANCommGet(chasiss_can_comm);
+    chassis_mode_e last_chassis_mode = chassis_cmd_recv.chassis_mode;
+    chassis_cmd_recv = *(Chassis_Ctrl_Cmd_s *)CANCommGet(chassis_can_comm);
+    if(last_chassis_mode == CHASSIS_GO_UP_STAIRS && chassis_cmd_recv.chassis_mode != CHASSIS_GO_UP_STAIRS){
+        goupstairs_step = STEP_ONE_LIFT_ALL; // 如果从上楼模式切换到其他模式，则重置上楼步骤
+        goupstairs_step_enter_ms = 0.0f;
+    }
 #endif // CHASSIS_BOARD
-
-    if (chassis_cmd_recv.chassis_mode == CHASSIS_ZERO_FORCE)
+    Recv2Local();
+    if (chassis_cmd_local.chassis_mode == CHASSIS_ZERO_FORCE)
     { // 如果出现重要模块离线或遥控器设置为急停,让电机停止
         DJIMotorStop(motor_lf);
         DJIMotorStop(motor_rf);
@@ -419,7 +511,7 @@ void ChassisTask()
         DMMotorStop(leg_left_motor);
         DMMotorStop(leg_right_motor);
     }
-    else
+    else if(chassis_cmd_local.chassis_mode == CHASSIS_MOVE_ROTATE)
     { // 正常工作
         DJIMotorEnable(motor_lf);
         DJIMotorEnable(motor_rf);
@@ -429,26 +521,24 @@ void ChassisTask()
         DMMotorEnable(leg_left_motor);
         DMMotorEnable(leg_right_motor);
     }
-    // 根据控制模式设定旋转速度
-    // switch (chassis_cmd_recv.chassis_mode)
-    // {
-    // case CHASSIS_NO_FOLLOW: // 底盘不旋转,但维持全向机动,一般用于调整云台姿态
-    //     chassis_cmd_recv.wz = 0;
-    //     break;
-    // case CHASSIS_FOLLOW_GIMBAL_YAW: // 跟随云台,不单独设置pid,以误差角度平方为速度输出
-    //     chassis_cmd_recv.wz = -1.5f * chassis_cmd_recv.offset_angle * abs(chassis_cmd_recv.offset_angle);
-    //     break;
-    // case CHASSIS_ROTATE: // 自旋,同时保持全向机动;当前wz维持定值,后续增加不规则的变速策略
-    //     chassis_cmd_recv.wz = 4000;
-    //     break;
-    // default:
-    //     break;
-    // }
-
+    else if(chassis_cmd_local.chassis_mode == CHASSIS_GO_UP_STAIRS){
+        DJIMotorEnable(motor_lf);
+        DJIMotorEnable(motor_rf);
+        DJIMotorEnable(motor_lb);
+        DJIMotorEnable(motor_rb);
+        DMMotorEnable(lift_motor);
+        DMMotorEnable(leg_left_motor);
+        DMMotorEnable(leg_right_motor);
+        GoUpStairs();
+    }
+    else
+    {
+        // 其他模式暂不处理
+    }
     // 根据云台和底盘的角度offset将控制量映射到底盘坐标系上
     // 底盘逆时针旋转为角度正方向;云台命令的方向以云台指向的方向为x,采用右手系(x指向正北时y在正东)
-    chassis_vx = chassis_cmd_recv.vx;
-    chassis_vy = chassis_cmd_recv.vy;
+    chassis_vx = chassis_cmd_local.vx;
+    chassis_vy = chassis_cmd_local.vy;
 
     // 根据控制模式进行正运动学解算,计算底盘输出
     MecanumCalculate();
@@ -460,20 +550,11 @@ void ChassisTask()
     // 根据电机的反馈速度和IMU(如果有)计算真实速度
     EstimateSpeed();
 
-    // // 获取裁判系统数据   建议将裁判系统与底盘分离，所以此处数据应使用消息中心发送
-    // // 我方颜色id小于7是红色,大于7是蓝色,注意这里发送的是对方的颜色, 0:blue , 1:red
-    // chassis_feedback_data.enemy_color = referee_data->GameRobotState.robot_id > 7 ? 1 : 0;
-    // // 当前只做了17mm热量的数据获取,后续根据robot_def中的宏切换双枪管和英雄42mm的情况
-    // chassis_feedback_data.bullet_speed = referee_data->GameRobotState.shooter_id1_17mm_speed_limit;
-    // chassis_feedback_data.rest_heat = referee_data->PowerHeatData.shooter_heat0;
 
-    // 推送反馈消息
-    chassis_feedback_data.lift_motor_state  = lift_motor_state; // 将升降电机状态回传给cmd
-    chassis_feedback_data.leg_motor_state  = leg_motor_state; // 将腿电机状态回传给cmd
 #ifdef ONE_BOARD
     PubPushMessage(chassis_pub, (void *)&chassis_feedback_data);
 #endif
 #ifdef CHASSIS_BOARD
-    CANCommSend(chasiss_can_comm, (void *)&chassis_feedback_data);
+    CANCommSend(chassis_can_comm, (void *)&chassis_feedback_data);
 #endif // CHASSIS_BOARD
 }

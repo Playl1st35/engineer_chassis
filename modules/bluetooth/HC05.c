@@ -53,6 +53,6 @@ void HC05_SendData(uint8_t *data, uint8_t data_num)
     hc05_msg.send_data[HC05_BUFFERSIZE - 1] = FRAME_END;
 
     // 发送数据
-    USARTSend(hc05_usart_instance, hc05_msg.send_data, data_num+2, USART_TRANSFER_IT); 
+    //USARTSend(hc05_usart_instance, hc05_msg.send_data, data_num+2, USART_TRANSFER_IT); 
 
 }

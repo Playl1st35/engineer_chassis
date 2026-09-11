@@ -47,7 +47,7 @@ void ServoSetAngle(ServoInstance *servo, float angle)
     case Bus_Servo:
         servo_angle_write[8] = (uint16_t)angle&0xff;
         servo_angle_write[9] = (uint16_t)angle>>8;
-        USARTSend(servo->usart_instance, servo_angle_write, 16, USART_TRANSFER_DMA);
+        //USARTSend(servo->usart_instance, servo_angle_write, 16, USART_TRANSFER_DMA);
        // USARTSend(servo->usart_instance, servo_angle_read, 6, USART_TRANSFER_DMA);
         break;
     case PWM_Servo:

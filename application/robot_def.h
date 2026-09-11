@@ -17,8 +17,8 @@
 #include "stdint.h"
 
 /* 开发板类型定义,烧录时注意不要弄错对应功能;修改定义后需要重新编译,只能存在一个定义! */
-#define ONE_BOARD // 单板控制整车
-//#define CHASSIS_BOARD //底盘板
+//#define ONE_BOARD // 单板控制整车
+#define CHASSIS_BOARD //底盘板
 // #define GIMBAL_BOARD  //云台板
 
 //#define VISION_USE_VCP  // 使用虚拟串口发送视觉数据
@@ -83,9 +83,11 @@ typedef enum
 typedef enum
 {
     CHASSIS_ZERO_FORCE = 0,    // 电流零输入
+    CHASSIS_MOVE_ROTATE,            
     CHASSIS_ROTATE,            // 小陀螺模式
     CHASSIS_NO_FOLLOW,         // 不跟随，允许全向平移
     CHASSIS_FOLLOW_GIMBAL_YAW, // 跟随模式，底盘叠加角度环控制
+    CHASSIS_GO_UP_STAIRS, 
 } chassis_mode_e;
 
 // 云台模式设置
@@ -157,7 +159,7 @@ typedef struct
     // UI部分
     //  ...
 
-} Chassis_Ctrl_Cmd_s;
+} Chassis_Ctrl_Local_s;
 
 // cmd发布的云台控制数据,由gimbal订阅
 typedef struct
@@ -218,7 +220,33 @@ typedef struct
     // code to go here
     // ...
 } Shoot_Upload_Data_s;
+typedef enum
+{
+    CHASSIS_RISE_OFF = 0,
+    CHASSIS_RISE_ON,
+} chassis_rise_mode_e;
+typedef struct
+{
+    // 控制部分
+    int8_t vx;           // 前进方向速度
+    int8_t vy;           // 横移方向速度
+    float wz;           // 旋转速度
+    chassis_mode_e chassis_mode;
+    chassis_rise_mode_e chassis_rise_flag;
+    // UI部分
+    
+    //  ...
 
+} Chassis_Ctrl_Cmd_s;
+
+typedef enum
+{
+    STEP_ONE_LIFT_ALL = 0,
+    STEP_TWO_MOVE_FRONT,
+    STEP_THREE_LOWER_LIFT,
+    STEP_FOUR_LOWER_LEG,
+    STEP_FIVE_WAIT,//为了防止没上去，在退出之前会一直保持前进
+}GoUpStairs_Step_e;
 #pragma pack() // 开启字节对齐,结束前面的#pragma pack(1)
 
 #endif // !ROBOT_DEF_H
