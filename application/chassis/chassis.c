@@ -20,7 +20,6 @@
 #include "referee_task.h"
 
 #include "general_def.h"
-#include "bsp_dwt.h"
 #include "referee_UI.h"
 #include "arm_math.h"
 #include <math.h>
@@ -33,6 +32,8 @@
 #define OMEGA_COEF (6.0f)
 #define GO_UP_FORWARD_SPEED (-1.0f)
 #define GO_UP_FORWARD_TIME (2.0f)
+#define GO_UP_FORWARD_ENTRY_COUNT ((uint32_t)(GO_UP_FORWARD_TIME * CHASSIS_TASK_FREQUENCY))
+#define GO_UP_STAIR_SPEED_THRESHOLD (150.0f)
 /* 底盘应用包含的模块和信息存储,底盘是单例模式,因此不需要为底盘建立单独的结构体 */
 #ifdef CHASSIS_BOARD // 如果是底盘板,使用板载IMU获取底盘转动角速度
 #include "can_comm.h"
@@ -64,7 +65,7 @@ static DMMotorInstance *lift_motor,*leg_left_motor,*leg_right_motor;
 static Lift_Motor_State_e lift_motor_state;
 static Lift_Motor_State_e leg_motor_state;
 static GoUpStairs_Step_e goupstairs_step = STEP_ONE_LIFT_ALL;
-static float goupstairs_step_enter_ms =0.0f;
+static uint32_t goupstairs_step_enter_count = 0;
 
 /* 私有函数计算的中介变量,设为静态避免参数传递的开销 */
 static float chassis_vx, chassis_vy;     // 将云台系的速度投影到底盘
@@ -226,7 +227,6 @@ static void EstimateSpeed()
     // chassis_feedback_data.vx vy wz =
     //  ...
 }
-//暂定从底部到顶部共2s，使用差值控制
 
 static void LiftMotorControl()
 {
@@ -428,8 +428,34 @@ static void Recv2Local()
     }
 }
 
+static uint8_t GoUpStairsSpeedReady(void)
+{
+    float avg_wheel_speed = 0.0f;
+    if (motor_lf == NULL || motor_rf == NULL || motor_lb == NULL || motor_rb == NULL)
+    {
+        return 0;
+    }
+
+    avg_wheel_speed = (fabsf(motor_lf->measure.speed_aps) +
+                      fabsf(motor_rf->measure.speed_aps) +
+                      fabsf(motor_lb->measure.speed_aps) +
+                      fabsf(motor_rb->measure.speed_aps)) / 4.0f;
+    return avg_wheel_speed >= GO_UP_STAIR_SPEED_THRESHOLD;
+}
+
 static void GoUpStairs()
 {
+    static GoUpStairs_Step_e last_step = STEP_ONE_LIFT_ALL;
+
+    if (goupstairs_step != last_step)
+    {
+        goupstairs_step_enter_count = 0;
+        last_step = goupstairs_step;
+    }
+    else
+    {
+        goupstairs_step_enter_count++;
+    }
 
     switch (goupstairs_step)
     {
@@ -441,14 +467,13 @@ static void GoUpStairs()
         chassis_cmd_local.leg_motor_state = LIFT_UP;
         if(lift_motor_state == LIFT_UP_LOCK && leg_motor_state == LIFT_UP_LOCK){
             goupstairs_step = STEP_TWO_MOVE_FRONT;
-            goupstairs_step_enter_ms = DWT_GetTimeline_ms();
         }
         break;
     case STEP_TWO_MOVE_FRONT:
         chassis_cmd_local.vx = GO_UP_FORWARD_SPEED * SPEED_COEF;
         chassis_cmd_local.vy = 0;
         chassis_cmd_local.wz = 0;
-        if(DWT_GetTimeline_ms() - goupstairs_step_enter_ms >= GO_UP_FORWARD_TIME * 1000.0f){
+        if(GoUpStairsSpeedReady() || goupstairs_step_enter_count >= GO_UP_FORWARD_ENTRY_COUNT){
             goupstairs_step = STEP_THREE_LOWER_LIFT;
         }
         break;
@@ -459,14 +484,13 @@ static void GoUpStairs()
         chassis_cmd_local.lift_motor_state = LIFT_DOWN;
         if(lift_motor_state == LIFT_DOWN_LOCK){
             goupstairs_step = STEP_FOUR_LOWER_LEG;
-            goupstairs_step_enter_ms = DWT_GetTimeline_ms();
         }
         break;
     case STEP_FOUR_LOWER_LEG:
         chassis_cmd_local.vx = GO_UP_FORWARD_SPEED * SPEED_COEF;
         chassis_cmd_local.vy = 0;
         chassis_cmd_local.wz = 0;
-        if(DWT_GetTimeline_ms() - goupstairs_step_enter_ms >= GO_UP_FORWARD_TIME * 1000.0f){
+        if(GoUpStairsSpeedReady() || goupstairs_step_enter_count >= GO_UP_FORWARD_ENTRY_COUNT){
             chassis_cmd_local.leg_motor_state = LIFT_DOWN;
             if(leg_motor_state == LIFT_DOWN_LOCK){
                 goupstairs_step = STEP_FIVE_WAIT;
@@ -497,7 +521,7 @@ void ChassisTask()
     chassis_cmd_recv = *(Chassis_Ctrl_Cmd_s *)CANCommGet(chassis_can_comm);
     if(last_chassis_mode == CHASSIS_GO_UP_STAIRS && chassis_cmd_recv.chassis_mode != CHASSIS_GO_UP_STAIRS){
         goupstairs_step = STEP_ONE_LIFT_ALL; // 如果从上楼模式切换到其他模式，则重置上楼步骤
-        goupstairs_step_enter_ms = 0.0f;
+        goupstairs_step_enter_count = 0;
     }
 #endif // CHASSIS_BOARD
     Recv2Local();
